@@ -1,0 +1,91 @@
+# minimal-fft
+
+Chirp Z-transform and zoomed FFT in PyTorch. One implementation file, one dependency.
+
+`torch.fft.fft` evaluates the spectrum of an `N`-sample signal at `N` equispaced frequencies covering the whole circle `[0, 2π)`. Often you only care about a narrow band, or you want it sampled more finely than `2π/N`, or you want `M ≠ N` output samples. The chirp Z-transform (Bluestein's algorithm) does exactly that with three FFTs, at `O((N+M) log(N+M))` cost, on any device, with autograd.
+
+Typical uses: pupil-to-PSF computation in microscopy, Fourier ptychography, diffraction onto a rescaled output grid, fine spectral analysis of a narrow band.
+
+## Install
+
+```bash
+pip install minimal-fft                                     # once published
+pip install git+https://github.com/jon-dong/minimal-fft     # from GitHub
+pip install -e ".[test]" && pytest                          # from a checkout
+```
+
+Requires Python ≥ 3.10 and PyTorch ≥ 2.0.
+
+## Quick start
+
+```python
+import torch
+from minimal_fft import zoom_fft, zoom_ifft, zoom_freq, czt
+
+x = torch.randn(256, dtype=torch.complex64)
+
+# Spectrum on the band [-0.2, 0.2] rad/sample, sampled at 1024 points.
+X = zoom_fft(x, n_out=1024, k_start=-0.2, k_end=0.2)
+w = zoom_freq(1024, -0.2, 0.2)          # the 1024 frequencies, for plotting
+
+# The adjoint (and, on a full band, the inverse).
+x_back = zoom_ifft(zoom_fft(x), n_out=256)   # == x
+
+# Images: transform the last two axes, batch axes are untouched.
+pupil = torch.randn(8, 64, 64, dtype=torch.complex64)
+psf = zoom_fft(pupil, n_out=(256, 256), k_start=-0.5, k_end=0.5,
+               dim=(-2, -1), center=True)
+
+# The raw chirp Z-transform, if you need it.
+X = czt(x, n_out=100, w_phase=-0.01, a_phase=0.3)
+```
+
+## API
+
+Along one transformed axis with `N` input and `M` output samples:
+
+| Function | Computes |
+|---|---|
+| `czt(x, n_out, w_phase, a_phase, dim)` | `X[k] = Σₙ x[n] e^{-i a n} e^{i w n k}`, `k = 0..M-1` |
+| `zoom_fft(x, n_out, k_start, k_end, dim, norm, center, include_end)` | `X[m] = Σₙ x[n] e^{-i ωₘ (n - c)}` |
+| `zoom_ifft(X, n_out, k_start, k_end, dim, norm, center, include_end)` | `x[n] = Σₘ X[m] e^{+i ωₘ (n - c)}` |
+| `zoom_freq(n, k_start, k_end, include_end)` | the band samples `ωₘ = k_start + step · m` |
+
+`ωₘ` samples `[k_start, k_end]` in radians per sample; `c` is the origin index set by `center`. Every function:
+
+- acts on the last axis by default; `dim` takes an int or a tuple (the transform is separable, so a 2-D transform is `dim=(-2, -1)`);
+- leaves all other axes alone (batch axes);
+- accepts a scalar or one value per transformed axis for `n_out`, `k_start`, `k_end`, `center`, `w_phase`, `a_phase`;
+- keeps the input's precision (complex64 in, complex64 out; real input is promoted to complex);
+- runs on CPU, CUDA or MPS and is differentiable with respect to `x`.
+
+## Conventions
+
+**Defaults reproduce `torch.fft`.** `zoom_fft(x)` is `torch.fft.fft(x, norm="ortho")`, `zoom_ifft` the inverse, and `czt(x)` the unnormalised DFT.
+
+**Band.** `include_end=False` (default) samples like FFT bins: `step = (k_end - k_start) / M`, right end excluded, so `[0, 2π)` with `M = N` is the DFT and `[-π, π)` is the `fftshift`-ed spectrum. `include_end=True` puts the last sample exactly on `k_end` (`step = span / (M - 1)`).
+
+**Normalisation** follows `torch.fft`: `"backward"` leaves the forward transform unnormalised and divides the inverse by the number of band samples; `"forward"` does the opposite; `"ortho"` splits the factor. `zoom_ifft` is the conjugate transpose of `zoom_fft` over the same band under mirrored norms (`"backward"` ↔ `"forward"`, `"ortho"` ↔ `"ortho"`), for any band, and its exact inverse on a full band.
+
+**Origin (`center`).** `False`: sample 0 is the origin, as in `torch.fft`. `True`: the origin is at index `N // 2`, the `torch.fft.fftshift` convention, so on the full band `zoom_fft(x, center=True) == fft(ifftshift(x))` and `zoom_ifft(X, center=True) == fftshift(ifft(X))`. A float pins the origin at any index, possibly fractional: `(N - 1) / 2` is the geometric centre of the grid, which for even `N` lies between two samples (the convention of `psf_generator`). The correction is a phase ramp, so it is exact for any band and never wraps indices. In `zoom_ifft`, `center` refers to the output grid.
+
+**Accuracy.** Bluestein chirps `e^{i w k² / 2}` are evaluated in float64, reduced modulo `2π`, and only then cast to the working precision, so a float32 transform of thousands of samples stays at float32 round-off instead of losing digits to large phases.
+
+## Relation to other implementations
+
+- `scipy.signal.czt` / `scipy.signal.zoom_fft`: same algorithm. SciPy's contour is a general spiral (complex `w`, `a`); here it is restricted to the unit circle (phases `w_phase`, `a_phase`), which is the case needed for zooming and is numerically stable. This version is N-D, batched, GPU-capable and differentiable.
+- `torch.fft`: recovered exactly by the defaults, see above.
+- Origin: extracted from [psf_generator](https://github.com/Biomedical-Imaging-Group/psf_generator) (`custom_fft2`, `custom_ifft2`) and the `ciel` linear-operator library. The names map as `custom_fft2(x, shape_out, k_start, k_end, norm, fftshift_input, include_end)` → `zoom_fft(x, shape_out, k_start, k_end, dim=(-2, -1), norm, center, include_end)`, with `fftshift_input=True` becoming `center=(N - 1) / 2` (psf_generator) or `center=True` (ciel).
+
+## Tests
+
+```bash
+pip install -e ".[test]"
+pytest
+```
+
+The tests pin every convention above against explicit float64 summation and against `torch.fft`.
+
+## License
+
+MIT
