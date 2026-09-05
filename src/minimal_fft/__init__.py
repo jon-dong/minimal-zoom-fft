@@ -1,4 +1,4 @@
-"""minimal-fft: chirp Z-transform and zoomed FFT in PyTorch."""
+"""minimal-fft: zoomed FFT and chirp Z-transform in PyTorch."""
 
 from .core import czt, zoom_fft, zoom_ifft, zoom_freq
 

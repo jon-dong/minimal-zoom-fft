@@ -1,8 +1,8 @@
 # minimal-fft
 
-Chirp Z-transform and zoomed FFT in PyTorch. One implementation file, one dependency.
+The Fourier transform of a signal on any frequency band, at any sampling, in PyTorch: a zoomed FFT, computed by the chirp Z-transform. One implementation file, one dependency.
 
-`torch.fft.fft` evaluates the spectrum of an `N`-sample signal at `N` equispaced frequencies covering the whole circle `[0, 2π)`. Often you only care about a narrow band, or you want it sampled more finely than `2π/N`, or you want `M ≠ N` output samples. The chirp Z-transform (Bluestein's algorithm) does exactly that with three FFTs, at `O((N+M) log(N+M))` cost, on any device, with autograd.
+`torch.fft.fft` evaluates the spectrum of an `N`-sample signal at `N` equispaced frequencies covering the whole circle `[0, 2π)`. Often you only care about a narrow band, or you want it sampled more finely than `2π/N`, or you want `M ≠ N` output samples. Bluestein's algorithm does exactly that with three FFTs, at `O((N+M) log(N+M))` cost, on any device, with autograd.
 
 Typical uses: pupil-to-PSF computation in microscopy, Fourier ptychography, diffraction onto a rescaled output grid, fine spectral analysis of a narrow band.
 
@@ -76,6 +76,14 @@ Along one transformed axis with `N` input and `M` output samples:
 - `scipy.signal.czt` / `scipy.signal.zoom_fft`: same algorithm. SciPy's contour is a general spiral (complex `w`, `a`); here it is restricted to the unit circle (phases `w_phase`, `a_phase`), which is the case needed for zooming and is numerically stable. This version is N-D, batched, GPU-capable and differentiable.
 - `torch.fft`: recovered exactly by the defaults, see above.
 - Origin: extracted from [psf_generator](https://github.com/Biomedical-Imaging-Group/psf_generator) (`custom_fft2`, `custom_ifft2`) and the `ciel` linear-operator library. The names map as `custom_fft2(x, shape_out, k_start, k_end, norm, fftshift_input, include_end)` → `zoom_fft(x, shape_out, k_start, k_end, dim=(-2, -1), norm, center, include_end)`, with `fftshift_input=True` becoming `center=(N - 1) / 2` (psf_generator) or `center=True` (ciel).
+
+## Tutorials
+
+Three notebooks in [`notebooks/`](notebooks/), runnable after `pip install -e ".[notebooks]"`:
+
+1. [Why a zoomed FFT](notebooks/01_why_zoom_fft.ipynb): the PSF of a disk pupil is an Airy disk that a plain FFT undersamples; zero-padding fixes that at a cost `zoom_fft` avoids.
+2. [What it computes](notebooks/02_what_it_computes.ipynb): one figure and one block of checks per topic: the definition, why zero-padding gives the same samples, Bluestein's algorithm, the band, origin and normalisation conventions, the adjoint, images and autograd.
+3. [Benchmark](notebooks/03_benchmark.ipynb): the arrays each route allocates, speed against padded FFTs and SciPy, CPU against MPS, precision against float64 summation, memory and edge cases.
 
 ## Tests
 

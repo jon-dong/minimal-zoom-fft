@@ -1,157 +1,104 @@
-"""Chirp Z-transform (CZT) and zoomed FFT in PyTorch.
+"""Zoomed FFT and chirp Z-transform in PyTorch.
 
-Every function acts on the last axis by default, accepts ``dim`` (an int or a
-tuple of ints) to act on other or several axes -- the transforms are
-separable, so an N-D transform is the 1-D transform applied axis by axis --
-leaves the remaining (batch) axes untouched, runs on any device, keeps the
-input's precision (complex64 in, complex64 out) and is differentiable with
-respect to ``x``.
+Along one axis, with ``N`` input and ``M`` output samples::
 
-Definitions along one axis, with ``N`` input and ``M`` output samples::
+    zoom_fft(x)[m]  = sum_n x[n] exp(-i w_m (n - c))          m = 0..M-1
+    zoom_ifft(X)[n] = sum_m X[m] exp(+i w_m (n - c))          n = 0..N-1
+    czt(x)[k]       = sum_n x[n] exp(-i a n) exp(i w n k)      k = 0..M-1
 
-    czt(x, M, w, a)[k]   = sum_n x[n] exp(-i a n) exp(i w n k)      k = 0..M-1
-    zoom_fft(x)[m]       = sum_n x[n] exp(-i w_m (n - c))           m = 0..M-1
-    zoom_ifft(X)[n]      = sum_m X[m] exp(+i w_m (n - c))           n = 0..N-1
+``w_m = zoom_freq(M, k_start, k_end, include_end)`` samples the band in
+radians per sample and ``c`` is the index of the origin (``center``).  With
+default arguments ``zoom_fft`` is ``torch.fft.fft(x, norm="ortho")``,
+``zoom_ifft`` its inverse and ``czt`` the unnormalised DFT.
 
-where ``w_m = k_start + step * m`` samples the band ``[k_start, k_end]`` in
-radians per sample and ``c`` is the index of the origin (see ``center``).
-``zoom_fft`` with default arguments is exactly ``torch.fft.fft``; ``zoom_ifft``
-is the conjugate transpose of ``zoom_fft`` over the same band (under mirrored
-``norm``) and its inverse on a full band.
+Every function transforms the last axis by default; ``dim`` selects one or
+several axes (the transform is separable) and the other axes are batch axes.
+The input precision is kept (complex64 in, complex64 out; real input is
+promoted), any device works, and everything is differentiable in ``x``.
 
-The CZT is computed with Bluestein's algorithm: three FFTs of length
-``next_pow2(N + M - 1)``.  Chirp phases are evaluated in float64 and reduced
-modulo 2*pi before the cast to the working precision, so float32 stays
-accurate even for large transforms.
+The chirp Z-transform is Bluestein's algorithm: three FFTs of length
+``next_pow2(N + M - 1)``.  Chirp phases are reduced modulo 2*pi in float64
+before the cast to the working precision, so float32 stays accurate even
+when the phases reach thousands of radians.
 """
 
 from __future__ import annotations
 
 import math
-import numbers
 
 import torch
 from torch.fft import fft, ifft
 
 __all__ = ["czt", "zoom_fft", "zoom_ifft", "zoom_freq"]
 
-TWO_PI = 2.0 * math.pi
+TWO_PI = 2 * math.pi
 
-_REAL_DTYPE = {
-    torch.float32: torch.float32,
-    torch.complex64: torch.float32,
-    torch.float64: torch.float64,
-    torch.complex128: torch.float64,
-}
+# Exponent p of the scaling 1 / M**p, for the forward and the inverse transform.
+_NORM = {"backward": (0.0, 1.0), "forward": (1.0, 0.0), "ortho": (0.5, 0.5)}
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# --- helpers ---------------------------------------------------------------
 
-def _real_dtype(dtype: torch.dtype) -> torch.dtype:
-    try:
-        return _REAL_DTYPE[dtype]
-    except KeyError:
-        raise TypeError(
-            f"unsupported dtype {dtype}; expected float32/float64 or "
-            "complex64/complex128"
-        ) from None
+def _complex(x):
+    """Promote real input to complex; only float32/64 and complex64/128 are accepted."""
+    if x.dtype not in (torch.float32, torch.float64, torch.complex64, torch.complex128):
+        raise TypeError(f"unsupported dtype {x.dtype}; expected float32/64 or complex64/128")
+    return x.to(torch.promote_types(x.dtype, torch.complex64))
 
 
-def _dims(dim, ndim: int) -> tuple[int, ...]:
-    dims = (dim,) if isinstance(dim, int) else tuple(dim)
-    dims = tuple(d % ndim for d in dims)
-    if len(set(dims)) != len(dims):
-        raise ValueError(f"dim={dim!r} names the same axis twice")
-    return dims
+def _phasor(phase, like):
+    """``exp(i phase)`` on the device and in the precision of ``like``.
 
-
-def _per_dim(value, n: int, name: str) -> tuple:
-    """Broadcast a scalar (or None) to ``n`` axes; check the length otherwise."""
-    if value is None or isinstance(value, numbers.Number):
-        return (value,) * n
-    value = tuple(value)
-    if len(value) != n:
-        raise ValueError(
-            f"{name} must be a scalar or have one entry per transformed axis "
-            f"({n}); got {len(value)}"
-        )
-    return value
-
-
-def _phasor(phase: torch.Tensor, dtype: torch.dtype, device) -> torch.Tensor:
-    """``exp(1j * phase)`` for a float64 CPU ``phase``.
-
-    The phase is reduced modulo 2*pi *before* the cast to the working
-    precision, so ``exp(i w k^2 / 2)`` keeps full accuracy in float32 even
-    when ``w k^2`` reaches thousands of radians.
+    ``phase`` is float64 and is reduced modulo 2*pi *before* the cast, so
+    ``exp(i w k^2 / 2)`` keeps full accuracy in float32 for large phases.
     """
-    phase = torch.remainder(phase, TWO_PI).to(device=device, dtype=dtype)
-    return torch.complex(torch.cos(phase), torch.sin(phase))
+    phase = torch.remainder(phase, TWO_PI).to(device=like.device, dtype=like.real.dtype)
+    return torch.complex(phase.cos(), phase.sin())
 
 
-def _norm_factor(norm, n_band: int, inverse: bool) -> float:
-    """Scaling that matches ``torch.fft`` conventions, ``n_band`` = number of
-    band samples (output of the forward transform, input of the inverse)."""
-    if norm == "ortho":
-        return 1.0 / math.sqrt(n_band)
-    if norm == "backward" or norm is None:
-        return 1.0 / n_band if inverse else 1.0
-    if norm == "forward":
-        return 1.0 if inverse else 1.0 / n_band
-    raise ValueError(
-        f"unknown norm {norm!r}; expected 'ortho', 'forward' or 'backward'"
-    )
+def _axes(x, dim, **params):
+    """Yield ``(axis, {name: value})`` per transformed axis.
+
+    A scalar parameter applies to every axis; a sequence gives one value per
+    axis, in the order of ``dim``.
+    """
+    dims = tuple(d % x.ndim for d in ((dim,) if isinstance(dim, int) else dim))
+    if len(set(dims)) < len(dims):
+        raise ValueError(f"dim={dim!r} names the same axis twice")
+    for name, value in params.items():
+        if not isinstance(value, (tuple, list)):
+            params[name] = (value,) * len(dims)
+        elif len(value) != len(dims):
+            raise ValueError(f"{name} needs one value per transformed axis ({len(dims)})")
+    for i, d in enumerate(dims):
+        yield d, {name: value[i] for name, value in params.items()}
 
 
-def _step(k_start: float, k_end: float, n: int, include_end: bool) -> float:
+def _step(k_start, k_end, n, include_end):
     """Spacing of ``n`` band samples over ``[k_start, k_end]``."""
-    if include_end:
-        return (k_end - k_start) / (n - 1) if n > 1 else 0.0
-    return (k_end - k_start) / n
+    return (k_end - k_start) / (max(n - 1, 1) if include_end else n)
 
 
-def _origin(center, n: int) -> float:
-    if center is True:
-        return float(n // 2)
-    if center is False or center is None:
-        return 0.0
-    return float(center)
+# --- chirp Z-transform -----------------------------------------------------
 
-
-# ---------------------------------------------------------------------------
-# Chirp Z-transform
-# ---------------------------------------------------------------------------
-
-def _czt_last(x: torch.Tensor, n_out, w_phase, a_phase) -> torch.Tensor:
-    """Bluestein CZT along the last axis."""
-    n_in = x.shape[-1]
-    m = n_in if n_out is None else int(n_out)
-    w = -TWO_PI / m if w_phase is None else float(w_phase)
-    a = float(a_phase)
-    rdtype, device = _real_dtype(x.dtype), x.device
-    n_fft = 1 << (n_in + m - 2).bit_length()        # power of two >= n_in + m - 1
-
-    k = torch.arange(max(n_in, m), dtype=torch.float64)
-    chirp = _phasor(w * k * k / 2, rdtype, device)   # exp(i w k^2 / 2)
-    pre = chirp[:n_in]
-    if a != 0.0:
-        pre = pre * _phasor(-a * k[:n_in], rdtype, device)
+def _czt_last(x, n_out, w, a):
+    """Bluestein's chirp Z-transform along the last axis of a complex ``x``."""
+    n = x.shape[-1]
+    m = n if n_out is None else int(n_out)
+    w = -TWO_PI / m if w is None else float(w)
+    n_fft = 1 << (n + m - 2).bit_length()               # power of two >= n + m - 1
+    k = torch.arange(max(n, m), dtype=torch.float64)
+    chirp = _phasor(w * k * k / 2, x)                    # exp(i w k^2 / 2)
     # n k = (n^2 + k^2 - (k - n)^2) / 2 turns the sum over n into a linear
-    # convolution with exp(-i w j^2 / 2) for j = k - n in [-(n_in-1), m-1].
-    kernel = torch.cat([chirp[1:n_in].flip(0), chirp[:m]]).conj()
+    # convolution of x[n] exp(-i a n) exp(i w n^2 / 2) with exp(-i w j^2 / 2),
+    # j = k - n in [-(n - 1), m - 1], which three FFTs compute.
+    pre = chirp[:n] if a == 0 else chirp[:n] * _phasor(-a * k[:n], x)
+    kernel = torch.cat([chirp[1:n].flip(0), chirp[:m]]).conj()
     y = ifft(fft(x * pre, n=n_fft) * fft(kernel, n=n_fft))
-    return y[..., n_in - 1 : n_in - 1 + m] * chirp[:m]
+    return y[..., n - 1 : n - 1 + m] * chirp[:m]
 
 
-def czt(
-    x: torch.Tensor,
-    n_out=None,
-    w_phase=None,
-    a_phase=0.0,
-    dim=-1,
-) -> torch.Tensor:
+def czt(x, n_out=None, w_phase=None, a_phase=0.0, dim=-1):
     """Chirp Z-transform along ``dim``.
 
     Along each transformed axis, with ``N`` input samples::
@@ -161,66 +108,72 @@ def czt(
     Parameters
     ----------
     x : Tensor
-        Real or complex input; other axes are batch axes.
+        Real or complex input; the axes not in ``dim`` are batch axes.
     n_out : int or sequence of int, optional
-        Number of output samples ``M`` per axis.  Default: input length.
+        Output samples ``M`` per axis.  Default: the input length.
     w_phase : float or sequence of float, optional
         Phase increment ``w`` in radians.  Default ``-2*pi/M``, which with
-        ``M = N`` gives the unnormalised DFT (``torch.fft.fft(x, norm="backward")``).
+        ``M = N`` is the unnormalised DFT, ``torch.fft.fft(x)``.
     a_phase : float or sequence of float
         Starting phase ``a`` in radians.  Default 0.
     dim : int or sequence of int
-        Axes to transform.  Default: last axis.  Scalar ``n_out``, ``w_phase``
-        and ``a_phase`` apply to every axis; sequences are matched to ``dim``.
-
-    Returns
-    -------
-    Tensor
-        Complex tensor with the transformed axes resized to ``n_out``.
+        Axes to transform.  Default: the last axis.
     """
-    dims = _dims(dim, x.ndim)
-    n = len(dims)
-    for d, m, w, a in zip(dims, _per_dim(n_out, n, "n_out"),
-                          _per_dim(w_phase, n, "w_phase"),
-                          _per_dim(a_phase, n, "a_phase")):
-        x = _czt_last(x.movedim(d, -1), m, w, a).movedim(-1, d)
+    x = _complex(x)
+    for d, p in _axes(x, dim, n_out=n_out, w=w_phase, a=a_phase):
+        x = _czt_last(x.movedim(d, -1), **p).movedim(-1, d)
     return x
 
 
-# ---------------------------------------------------------------------------
-# Zoomed FFT
-# ---------------------------------------------------------------------------
+# --- zoomed FFT ------------------------------------------------------------
 
-def zoom_freq(
-    n: int,
-    k_start: float = 0.0,
-    k_end: float = TWO_PI,
-    include_end: bool = False,
-    *,
-    dtype: torch.dtype = torch.float64,
-    device=None,
-) -> torch.Tensor:
-    """The ``n`` angular frequencies (radians per sample) that ``zoom_fft``
-    evaluates over ``[k_start, k_end]``: ``k_start + step * m``.
+def zoom_freq(n, k_start=0.0, k_end=TWO_PI, include_end=False):
+    """The ``n`` frequencies (radians per sample) at which ``zoom_fft``
+    samples the band: ``k_start + step * m``, as a float64 tensor.
 
-    ``include_end=False`` samples like FFT bins (``step = span / n``, right
-    end excluded); ``include_end=True`` puts the last sample exactly on
-    ``k_end`` (``step = span / (n - 1)``).  The analogue of ``torch.fft.fftfreq``.
+    ``include_end=False`` samples like FFT bins (``step = span / n``, right end
+    excluded); ``include_end=True`` puts the last sample on ``k_end``
+    (``step = span / (n - 1)``).  The analogue of ``torch.fft.fftfreq``.
     """
     step = _step(k_start, k_end, n, include_end)
-    return k_start + step * torch.arange(n, dtype=dtype, device=device)
+    return k_start + step * torch.arange(n, dtype=torch.float64)
 
 
-def zoom_fft(
-    x: torch.Tensor,
-    n_out=None,
-    k_start=0.0,
-    k_end=TWO_PI,
-    dim=-1,
-    norm="ortho",
-    center=False,
-    include_end=False,
-) -> torch.Tensor:
+def _zoom_last(x, n_out, k_start, k_end, center, include_end, inverse):
+    """One axis of ``zoom_fft`` (or of ``zoom_ifft`` if ``inverse``), unnormalised."""
+    n_out = x.shape[-1] if n_out is None else int(n_out)
+    m = x.shape[-1] if inverse else n_out                # band samples
+    n = n_out if inverse else x.shape[-1]                # grid samples
+    c = float(n // 2) if center is True else float(center or 0.0)
+    step = _step(k_start, k_end, m, include_end)
+    ramp = None if c == 0 else _phasor(c * zoom_freq(m, k_start, k_end, include_end), x)
+    if inverse:
+        # sum_m X[m] e^{+i w_m (n - c)} = e^{+i k_start n} sum_m [X[m] e^{-i c w_m}] e^{+i step m n}
+        y = _czt_last(x if ramp is None else x * ramp.conj(), n, step, 0.0)
+        return y if k_start == 0 else y * _phasor(k_start * torch.arange(n, dtype=torch.float64), x)
+    # sum_n x[n] e^{-i w_m (n - c)} = e^{+i c w_m} sum_n x[n] e^{-i k_start n} e^{-i step n m}
+    y = _czt_last(x, m, -step, k_start)
+    return y if ramp is None else y * ramp
+
+
+def _zoom(x, n_out, k_start, k_end, dim, norm, center, include_end, inverse):
+    """``zoom_fft`` / ``zoom_ifft`` over every axis in ``dim``, then the ``norm`` factor."""
+    norm = norm or "backward"
+    if norm not in _NORM:
+        raise ValueError(f"unknown norm {norm!r}; expected 'ortho', 'forward' or 'backward'")
+    x = _complex(x)
+    n_band = 1
+    for d, p in _axes(x, dim, n_out=n_out, k_start=k_start, k_end=k_end, center=center):
+        y = _zoom_last(x.movedim(d, -1), include_end=include_end, inverse=inverse, **p)
+        y = y.movedim(-1, d)
+        n_band *= (x if inverse else y).shape[d]
+        x = y
+    p = _NORM[norm][inverse]
+    return x if p == 0 else x * n_band ** -p
+
+
+def zoom_fft(x, n_out=None, k_start=0.0, k_end=TWO_PI, dim=-1, norm="ortho",
+             center=False, include_end=False):
     """Zoomed FFT: the spectrum of ``x`` on the band ``[k_start, k_end]``.
 
     Along each transformed axis, with ``N`` input samples::
@@ -234,88 +187,51 @@ def zoom_fft(
     Parameters
     ----------
     x : Tensor
-        Real or complex input; other axes are batch axes.
+        Real or complex input; the axes not in ``dim`` are batch axes.
     n_out : int or sequence of int, optional
-        Number of band samples ``M`` per axis.  Default: input length.
+        Band samples ``M`` per axis.  Default: the input length.
     k_start, k_end : float or sequence of float
         Band limits in radians per sample.  Default: the full circle
-        ``[0, 2*pi)``.  A band ``[-pi, pi)`` gives the ``fftshift``-ed spectrum.
+        ``[0, 2*pi)``; ``[-pi, pi)`` gives the ``fftshift``-ed spectrum.
     dim : int or sequence of int
-        Axes to transform.  Default: last axis.
+        Axes to transform.  Default: the last axis.
     norm : {"ortho", "forward", "backward"}
         As in ``torch.fft``: ``"backward"`` leaves the forward transform
         unnormalised, ``"forward"`` divides it by the number of band samples
         ``prod(M)``, ``"ortho"`` by its square root.
     center : bool, float or sequence
-        Where the origin of the input grid sits.  ``False``: sample 0 (the
-        ``torch.fft`` convention).  ``True``: index ``N // 2`` (the
-        ``torch.fft.fftshift`` convention; on the full band this equals
+        Origin of the input grid.  ``False``: sample 0 (``torch.fft``).
+        ``True``: index ``N // 2`` (``fftshift``; on the full band this is
         ``fft(ifftshift(x))``).  A float pins the origin at that index, which
-        may be fractional: ``(N - 1) / 2`` is the centre of a grid symmetric
-        about zero.
+        may be fractional: ``(N - 1) / 2`` is the centre of the grid.
     include_end : bool
         Sample ``k_end`` exactly (``M - 1`` steps) instead of excluding it.
-
-    Returns
-    -------
-    Tensor
-        Complex tensor with the transformed axes resized to ``n_out``.
     """
-    _norm_factor(norm, 1, inverse=False)          # reject a bad norm early
-    dims = _dims(dim, x.ndim)
-    n = len(dims)
-    rdtype, device = _real_dtype(x.dtype), x.device
-    n_band = 1
-    for d, m, k0, k1, c in zip(dims, _per_dim(n_out, n, "n_out"),
-                               _per_dim(k_start, n, "k_start"),
-                               _per_dim(k_end, n, "k_end"),
-                               _per_dim(center, n, "center")):
-        n_in = x.shape[d]
-        m = n_in if m is None else int(m)
-        step = _step(k0, k1, m, include_end)
-        # sum_n x[n] exp(-i (k0 + step m) n)  ->  czt with a = k0, w = -step.
-        y = _czt_last(x.movedim(d, -1), m, -step, k0)
-        c = _origin(c, n_in)
-        if c != 0.0:
-            # exp(-i w_m (n - c)) = exp(+i c w_m) exp(-i w_m n)
-            y = y * _phasor(c * zoom_freq(m, k0, k1, include_end), rdtype, device)
-        x = y.movedim(-1, d)
-        n_band *= m
-    factor = _norm_factor(norm, n_band, inverse=False)
-    return x if factor == 1.0 else x * factor
+    return _zoom(x, n_out, k_start, k_end, dim, norm, center, include_end, inverse=False)
 
 
-def zoom_ifft(
-    x: torch.Tensor,
-    n_out=None,
-    k_start=0.0,
-    k_end=TWO_PI,
-    dim=-1,
-    norm="ortho",
-    center=False,
-    include_end=False,
-) -> torch.Tensor:
-    """Zoomed inverse FFT: adjoint of ``zoom_fft`` over the same band.
+def zoom_ifft(x, n_out=None, k_start=0.0, k_end=TWO_PI, dim=-1, norm="ortho",
+              center=False, include_end=False):
+    """Zoomed inverse FFT: the adjoint of ``zoom_fft`` over the same band.
 
-    The input holds the ``M`` band samples along each transformed axis (the
-    output grid of ``zoom_fft``, so the band step is set by the input length
-    here) and the output has ``N = n_out`` samples::
+    The input holds ``M`` band samples along each transformed axis (the
+    output grid of ``zoom_fft``) and the output has ``N = n_out`` samples::
 
         x[n] = sum_{m=0}^{M-1} X[m] exp(+i w_m (n - c)),   n = 0, ..., N-1
 
-    This is the conjugate transpose of ``zoom_fft`` with the same ``k_start``,
-    ``k_end``, ``center`` and ``include_end`` -- under mirrored ``norm``
-    (``"backward"`` <-> ``"forward"``, ``"ortho"`` <-> ``"ortho"``), exactly as
-    for ``torch.fft.fft``/``ifft``.  On a full band (``k_end = k_start + 2*pi``,
-    ``include_end=False``, ``n_out = M``) it is also the exact inverse, and
-    with default arguments it is ``torch.fft.ifft(x, norm="ortho")``.
+    This is the conjugate transpose of ``zoom_fft`` with the same
+    ``k_start``, ``k_end``, ``center`` and ``include_end`` under mirrored
+    ``norm`` (``"backward"`` <-> ``"forward"``, ``"ortho"`` <-> ``"ortho"``),
+    as for ``torch.fft.fft`` / ``ifft``.  On a full band (``k_end = k_start
+    + 2*pi``, ``include_end=False``, ``n_out = M``) it is also the exact
+    inverse, and with default arguments it is ``torch.fft.ifft(x, norm="ortho")``.
 
     Parameters
     ----------
     x : Tensor
-        Band samples along ``dim``; other axes are batch axes.
+        Band samples along ``dim``; the other axes are batch axes.
     n_out : int or sequence of int, optional
-        Number of output (spatial) samples ``N`` per axis.  Default: input length.
+        Output (grid) samples ``N`` per axis.  Default: the input length.
     k_start, k_end, dim, include_end
         As passed to ``zoom_fft``.
     norm : {"ortho", "forward", "backward"}
@@ -323,33 +239,7 @@ def zoom_ifft(
         the number of band samples ``prod(M)``, ``"forward"`` leaves it
         unnormalised, ``"ortho"`` divides by the square root.
     center : bool, float or sequence
-        Origin of the *output* grid, with the same meaning as in ``zoom_fft``
-        (``True`` is ``N // 2``; on the full band this equals
-        ``fftshift(ifft(X))``).
+        Origin of the *output* grid, with the meaning it has in ``zoom_fft``
+        (``True`` is ``N // 2``; on the full band this is ``fftshift(ifft(X))``).
     """
-    _norm_factor(norm, 1, inverse=True)           # reject a bad norm early
-    dims = _dims(dim, x.ndim)
-    n = len(dims)
-    rdtype, device = _real_dtype(x.dtype), x.device
-    n_band = 1
-    for d, n_sp, k0, k1, c in zip(dims, _per_dim(n_out, n, "n_out"),
-                                  _per_dim(k_start, n, "k_start"),
-                                  _per_dim(k_end, n, "k_end"),
-                                  _per_dim(center, n, "center")):
-        m = x.shape[d]                              # band samples
-        n_sp = m if n_sp is None else int(n_sp)
-        step = _step(k0, k1, m, include_end)
-        y = x.movedim(d, -1)
-        c = _origin(c, n_sp)
-        if c != 0.0:
-            # exp(+i w_m (n - c)) = exp(-i c w_m) exp(+i w_m n): a ramp on the input.
-            y = y * _phasor(-c * zoom_freq(m, k0, k1, include_end), rdtype, device)
-        # sum_m X[m] exp(+i step m n)  ->  czt with w = +step; the k0 part of
-        # w_m multiplies the *output* index n, so it is an output-side ramp.
-        y = _czt_last(y, n_sp, step, 0.0)
-        if k0 != 0.0:
-            y = y * _phasor(k0 * torch.arange(n_sp, dtype=torch.float64), rdtype, device)
-        x = y.movedim(-1, d)
-        n_band *= m
-    factor = _norm_factor(norm, n_band, inverse=True)
-    return x if factor == 1.0 else x * factor
+    return _zoom(x, n_out, k_start, k_end, dim, norm, center, include_end, inverse=True)
