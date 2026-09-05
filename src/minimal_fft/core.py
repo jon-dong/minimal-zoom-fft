@@ -29,7 +29,7 @@ import math
 import torch
 from torch.fft import fft, ifft
 
-__all__ = ["czt", "zoom_fft", "zoom_ifft", "zoom_freq"]
+__all__ = ["czt", "czt_plain", "zoom_fft", "zoom_ifft", "zoom_freq"]
 
 TWO_PI = 2 * math.pi
 
@@ -77,6 +77,59 @@ def _axes(x, dim, **params):
 def _step(k_start, k_end, n, include_end):
     """Spacing of ``n`` band samples over ``[k_start, k_end]``."""
     return (k_end - k_start) / (max(n - 1, 1) if include_end else n)
+
+
+# --- readable twin ---------------------------------------------------------
+# czt_plain and czt compute the same transform.  czt_plain is Bluestein's
+# algorithm written out one step per line; czt is the same steps with the chirp
+# phases reduced modulo 2*pi in float64, the trivial factors skipped and the
+# convolution padded to a power of two.  The tests pin the two together.
+
+def czt_plain(x, n_out=None, w_phase=None, a_phase=0.0, dim=-1):
+    """``czt``, written out.
+
+    Bluestein's identity ``n k = (n² + k² − (k − n)²) / 2`` turns the sum
+    ``X[k] = Σ_n x[n] e^{-i a n} e^{i w n k}`` into a convolution::
+
+        X[k] = e^{i w k²/2} · Σ_n [ x[n] e^{-i a n} e^{i w n²/2} ] · e^{-i w (k − n)²/2}
+
+    so the transform is three steps: multiply the input by a chirp, convolve
+    with the conjugate chirp (by FFT, zero-padded so nothing wraps around),
+    multiply the result by the chirp again.  The phases are not reduced
+    modulo 2*pi here, so in float32 this version loses digits once ``w n²``
+    reaches thousands of radians; that reduction is what ``czt`` adds.
+    """
+    x = _complex(x)
+    for d, p in _axes(x, dim, n_out=n_out, w=w_phase, a=a_phase):
+        x = _czt_plain_last(x.movedim(d, -1), **p).movedim(-1, d)
+    return x
+
+
+def _czt_plain_last(x, n_out, w, a):
+    """Bluestein's algorithm along the last axis, step by step."""
+    n = x.shape[-1]
+    m = n if n_out is None else int(n_out)
+    w = -TWO_PI / m if w is None else float(w)
+
+    def phasor(phase):                                    # e^{i phase}, in the precision of x
+        return torch.exp(1j * phase).to(device=x.device, dtype=x.dtype)
+
+    k = torch.arange(max(n, m), dtype=torch.float64)
+    chirp = phasor(w * k * k / 2)                         # e^{i w k²/2}
+
+    # 1. multiply the input by the start phase and the chirp
+    xn = x * phasor(-a * k[:n]) * chirp[:n]
+
+    # 2. the convolution kernel e^{-i w j²/2} for every lag j = k - n, from -(n-1) to m-1
+    j = torch.arange(-(n - 1), m, dtype=torch.float64)
+    kernel = phasor(-w * j * j / 2)
+
+    # 3. linear convolution by FFT: pad to the full length so the circular one is linear
+    length = n + len(j) - 1
+    conv = ifft(fft(xn, n=length) * fft(kernel, n=length))
+
+    # 4. the lag j = k - n sits at position k + n - 1; multiply by the chirp again
+    return conv[..., n - 1 : n - 1 + m] * chirp[:m]
 
 
 # --- chirp Z-transform -----------------------------------------------------

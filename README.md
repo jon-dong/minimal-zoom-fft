@@ -59,6 +59,8 @@ Along one transformed axis with `N` input and `M` output samples:
 - keeps the input's precision (complex64 in, complex64 out; real input is promoted to complex);
 - runs on CPU, CUDA or MPS and is differentiable with respect to `x`.
 
+**Readable twin.** `czt_plain` computes the same transform as `czt`, with Bluestein's algorithm written out one step per line: multiply by the chirp, convolve with the conjugate chirp by a zero-padded FFT, multiply by the chirp again. It comes first in [`core.py`](src/minimal_fft/core.py) and the tests pin it to `czt`, which adds the phase reduction modulo 2π and the power-of-two padding. Read the plain one, call the fast one.
+
 ## Conventions
 
 **Defaults reproduce `torch.fft`.** `zoom_fft(x)` is `torch.fft.fft(x, norm="ortho")`, `zoom_ifft` the inverse, and `czt(x)` the unnormalised DFT.
