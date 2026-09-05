@@ -1,6 +1,6 @@
 # Publishes to PyPI on every tag `vX.Y.Z` using trusted publishing (no API
 # token).  One-time setup on pypi.org: Publishing -> Add a new pending
-# publisher with owner `jon-dong`, repository `minimal-fft`, workflow
+# publisher with owner `jon-dong`, repository `minimal-zoom-fft`, workflow
 # `publish.yml`, environment `pypi`.  The tag must match the version in
 # pyproject.toml.
 name: publish

@@ -8,7 +8,7 @@ import math
 import pytest
 import torch
 
-from minimal_fft import zoom_fft, zoom_ifft, zoom_freq
+from minimal_zoom_fft import zoom_fft, zoom_ifft, zoom_freq
 
 torch.manual_seed(0)
 PI = math.pi

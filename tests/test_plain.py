@@ -4,7 +4,7 @@ import math
 import pytest
 import torch
 
-from minimal_fft import czt, czt_plain
+from minimal_zoom_fft import czt, czt_plain
 
 from test_czt import brute_czt
 

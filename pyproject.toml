@@ -3,7 +3,7 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "minimal-fft"
+name = "minimal-zoom-fft"
 version = "0.1.0"
 description = "Zoomed FFT and chirp Z-transform in PyTorch: the spectrum on any band, at any sampling."
 readme = "README.md"
@@ -24,7 +24,7 @@ test = ["pytest"]
 notebooks = ["numpy", "scipy", "matplotlib", "jupyter"]
 
 [project.urls]
-Repository = "https://github.com/jon-dong/minimal-fft"
+Repository = "https://github.com/jon-dong/minimal-zoom-fft"
 
 [tool.setuptools.packages.find]
 where = ["src"]

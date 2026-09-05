@@ -1,4 +1,4 @@
-# minimal-fft
+# minimal-zoom-fft
 
 The Fourier transform of a signal on any frequency band, at any sampling, in PyTorch: a zoomed FFT, computed by the chirp Z-transform. One implementation file, one dependency.
 
@@ -9,8 +9,8 @@ Typical uses: pupil-to-PSF computation in microscopy, Fourier ptychography, diff
 ## Install
 
 ```bash
-pip install minimal-fft                                     # once published
-pip install git+https://github.com/jon-dong/minimal-fft     # from GitHub
+pip install minimal-zoom-fft                                     # once published
+pip install git+https://github.com/jon-dong/minimal-zoom-fft     # from GitHub
 pip install -e ".[test]" && pytest                          # from a checkout
 ```
 
@@ -20,7 +20,7 @@ Requires Python ≥ 3.10 and PyTorch ≥ 2.0.
 
 ```python
 import torch
-from minimal_fft import zoom_fft, zoom_ifft, zoom_freq, czt
+from minimal_zoom_fft import zoom_fft, zoom_ifft, zoom_freq, czt
 
 x = torch.randn(256, dtype=torch.complex64)
 
@@ -59,7 +59,7 @@ Along one transformed axis with `N` input and `M` output samples:
 - keeps the input's precision (complex64 in, complex64 out; real input is promoted to complex);
 - runs on CPU, CUDA or MPS and is differentiable with respect to `x`.
 
-**Readable twin.** `czt_plain` computes the same transform as `czt`, with Bluestein's algorithm written out one step per line: multiply by the chirp, convolve with the conjugate chirp by a zero-padded FFT, multiply by the chirp again. It comes first in [`core.py`](src/minimal_fft/core.py) and the tests pin it to `czt`, which adds the phase reduction modulo 2π and the power-of-two padding. Read the plain one, call the fast one.
+**Readable twin.** `czt_plain` computes the same transform as `czt`, with Bluestein's algorithm written out one step per line: multiply by the chirp, convolve with the conjugate chirp by a zero-padded FFT, multiply by the chirp again. It comes first in [`core.py`](src/minimal_zoom_fft/core.py) and the tests pin it to `czt`, which adds the phase reduction modulo 2π and the power-of-two padding. Read the plain one, call the fast one.
 
 ## Conventions
 

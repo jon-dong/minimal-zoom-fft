@@ -1,10 +1,10 @@
-"""Tests for ``minimal_fft.czt`` against torch.fft and explicit summation."""
+"""Tests for ``minimal_zoom_fft.czt`` against torch.fft and explicit summation."""
 import math
 
 import pytest
 import torch
 
-from minimal_fft import czt
+from minimal_zoom_fft import czt
 
 torch.manual_seed(0)
 TOL = 1e-10          # float64 tests
