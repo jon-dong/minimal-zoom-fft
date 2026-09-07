@@ -307,3 +307,10 @@ class TestDtypesAndErrors:
             zoom_fft(x, norm="nope")
         with pytest.raises(ValueError, match="norm"):
             zoom_ifft(x, norm="nope")
+
+    def test_out_of_range_dim_raises(self):
+        x = torch.randn(8, dtype=C128)
+        with pytest.raises(ValueError, match="out of range"):
+            zoom_fft(x, dim=1)
+        with pytest.raises(ValueError, match="out of range"):
+            zoom_ifft(x, dim=-2)

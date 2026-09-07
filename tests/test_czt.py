@@ -120,3 +120,12 @@ class TestArgumentErrors:
     def test_wrong_parameter_length_raises(self):
         with pytest.raises(ValueError, match="n_out"):
             czt(torch.randn(4, 4, dtype=C64), n_out=(3, 3, 3), dim=(0, 1))
+
+    def test_parameter_length_error_names_the_public_argument(self):
+        with pytest.raises(ValueError, match="w_phase"):
+            czt(torch.randn(4, 4, dtype=C64), w_phase=(1.0, 2.0, 3.0), dim=(0, 1))
+
+    @pytest.mark.parametrize("dim", [2, -3, (0, 2)])
+    def test_out_of_range_dim_raises(self, dim):
+        with pytest.raises(ValueError, match="out of range"):
+            czt(torch.randn(4, 4, dtype=C64), dim=dim)

@@ -104,7 +104,7 @@ MIT
 
 - Purpose: the Fourier transform of a signal on any frequency band, at any sampling, in PyTorch: a zoomed FFT, computed by the chirp Z-transform. One implementation file, one dependency.
 - Dependencies: `torch`.
-- Size: about 300 lines of implementation in one module, 5 public functions; about 460 lines of tests; 3 tutorial notebooks.
+- Size: about 320 lines of implementation in one module, 5 public functions; about 550 lines of tests; 3 tutorial notebooks.
 - Origin: the `psf_generator` library and the `ciel` computational-imaging library, EPFL; Bluestein's chirp Z-transform. Used by `minimal-linop`'s `fft` extra.
 - Provenance: written with Claude (Anthropic) from a brief; read and checked in full by Jonathan Dong.
 - Version: 0.1.0, MIT.

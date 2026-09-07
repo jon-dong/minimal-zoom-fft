@@ -64,7 +64,10 @@ def _axes(x, dim, **params):
     A scalar parameter applies to every axis; a sequence gives one value per
     axis, in the order of ``dim``.
     """
-    dims = tuple(d % x.ndim for d in ((dim,) if isinstance(dim, int) else dim))
+    dims = (dim,) if isinstance(dim, int) else tuple(dim)
+    if any(not -x.ndim <= d < x.ndim for d in dims):
+        raise ValueError(f"dim={dim!r} is out of range for a {x.ndim}-D input")
+    dims = tuple(d % x.ndim for d in dims)
     if len(set(dims)) < len(dims):
         raise ValueError(f"dim={dim!r} names the same axis twice")
     for name, value in params.items():
@@ -103,23 +106,24 @@ def czt_plain(x, n_out=None, w_phase=None, a_phase=0.0, dim=-1):
     with the conjugate chirp (by FFT, zero-padded so nothing wraps around),
     multiply the result by the chirp again.  Every phasor is evaluated in
     float64 and cast to the working precision afterwards, which is accurate
-    for any phase but builds a float64 array on the CPU.  ``czt`` reduces the
+    for any phase but builds a complex128 array on the CPU.  ``czt`` reduces the
     phase modulo 2*pi instead and takes the cosine and the sine in the working
     precision, on the device; that reduction is what keeps the cheaper route
     accurate, and the two agree to float32 round-off on transforms whose
     phases reach thousands of radians.
     """
     x = _complex(x)
-    for d, p in _axes(x, dim, n_out=n_out, w=w_phase, a=a_phase):
+    for d, p in _axes(x, dim, n_out=n_out, w_phase=w_phase, a_phase=a_phase):
         x = _czt_plain_last(x.movedim(d, -1), **p).movedim(-1, d)
     return x
 
 
-def _czt_plain_last(x, n_out, w, a):
+def _czt_plain_last(x, n_out, w_phase, a_phase):
     """Bluestein's algorithm along the last axis, step by step."""
     n = x.shape[-1]
     m = n if n_out is None else int(n_out)
-    w = -TWO_PI / m if w is None else float(w)
+    w = -TWO_PI / m if w_phase is None else float(w_phase)
+    a = float(a_phase)
 
     def phasor(phase):                                    # e^{i phase}, in the precision of x
         return torch.exp(1j * phase).to(device=x.device, dtype=x.dtype)
@@ -144,12 +148,16 @@ def _czt_plain_last(x, n_out, w, a):
 
 # --- chirp Z-transform -----------------------------------------------------
 
-def _czt_last(x, n_out, w, a):
+def _czt_last(x, n_out, w_phase, a_phase):
     """Bluestein's chirp Z-transform along the last axis of a complex ``x``."""
     n = x.shape[-1]
     m = n if n_out is None else int(n_out)
-    w = -TWO_PI / m if w is None else float(w)
-    n_fft = 1 << (n + m - 2).bit_length()               # power of two >= n + m - 1
+    w = -TWO_PI / m if w_phase is None else float(w_phase)
+    a = float(a_phase)
+    # Power of two >= n + m - 1.  That is shorter than the full linear length
+    # 2n + m - 2 that czt_plain pads to, so the end of the convolution wraps
+    # around, but it wraps below index n - 1, outside the window kept below.
+    n_fft = 1 << (n + m - 2).bit_length()
     k = torch.arange(max(n, m), dtype=torch.float64)
     chirp = _phasor(w * k * k / 2, x)                    # exp(i w k^2 / 2)
     # n k = (n^2 + k^2 - (k - n)^2) / 2 turns the sum over n into a linear
@@ -183,7 +191,7 @@ def czt(x, n_out=None, w_phase=None, a_phase=0.0, dim=-1):
         Axes to transform.  Default: the last axis.
     """
     x = _complex(x)
-    for d, p in _axes(x, dim, n_out=n_out, w=w_phase, a=a_phase):
+    for d, p in _axes(x, dim, n_out=n_out, w_phase=w_phase, a_phase=a_phase):
         x = _czt_last(x.movedim(d, -1), **p).movedim(-1, d)
     return x
 

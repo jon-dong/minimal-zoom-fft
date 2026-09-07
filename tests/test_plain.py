@@ -34,3 +34,20 @@ def test_plain_keeps_precision_and_promotes_real():
     assert czt_plain(x).dtype == C64
     assert torch.allclose(czt_plain(x), czt(x), atol=1e-5)
     assert czt_plain(torch.randn(16)).dtype == C64
+
+
+@pytest.mark.parametrize("kwargs", [{"dim": 3}, {"n_out": (3, 3, 3), "dim": (0, 1)},
+                                    {"dim": (0, -2)}])
+def test_plain_refuses_what_fast_refuses(kwargs):
+    x = torch.randn(4, 4, dtype=C64)
+    with pytest.raises(ValueError) as fast:
+        czt(x, **kwargs)
+    with pytest.raises(ValueError) as plain:
+        czt_plain(x, **kwargs)
+    assert str(plain.value) == str(fast.value)
+
+
+def test_plain_refuses_an_unsupported_dtype():
+    x = torch.arange(8)
+    with pytest.raises(TypeError, match="dtype"):
+        czt_plain(x)
