@@ -33,8 +33,10 @@ __all__ = ["czt", "czt_plain", "zoom_fft", "zoom_ifft", "zoom_freq"]
 
 TWO_PI = 2 * math.pi
 
-# Exponent p of the scaling 1 / M**p, for the forward and the inverse transform.
-_NORM = {"backward": (0.0, 1.0), "forward": (1.0, 0.0), "ortho": (0.5, 0.5)}
+# Exponent p of the scaling 1 / M**p, per norm and per direction.
+_NORM = {"backward": {"forward": 0.0, "inverse": 1.0},
+         "forward": {"forward": 1.0, "inverse": 0.0},
+         "ortho": {"forward": 0.5, "inverse": 0.5}}
 
 
 # --- helpers ---------------------------------------------------------------
@@ -74,9 +76,10 @@ def _axes(x, dim, **params):
         yield d, {name: value[i] for name, value in params.items()}
 
 
-def _step(k_start, k_end, n, include_end):
-    """Spacing of ``n`` band samples over ``[k_start, k_end]``."""
-    return (k_end - k_start) / (max(n - 1, 1) if include_end else n)
+def _band(n, k_start, k_end, include_end):
+    """The spacing and the ``n`` band samples over ``[k_start, k_end]``."""
+    step = (k_end - k_start) / (max(n - 1, 1) if include_end else n)
+    return step, k_start + step * torch.arange(n, dtype=torch.float64)
 
 
 # --- readable twin ---------------------------------------------------------
@@ -195,8 +198,7 @@ def zoom_freq(n, k_start=0.0, k_end=TWO_PI, include_end=False):
     excluded); ``include_end=True`` puts the last sample on ``k_end``
     (``step = span / (n - 1)``).  The analogue of ``torch.fft.fftfreq``.
     """
-    step = _step(k_start, k_end, n, include_end)
-    return k_start + step * torch.arange(n, dtype=torch.float64)
+    return _band(n, k_start, k_end, include_end)[1]
 
 
 def _zoom_last(x, n_out, k_start, k_end, center, include_end, inverse):
@@ -204,9 +206,9 @@ def _zoom_last(x, n_out, k_start, k_end, center, include_end, inverse):
     n_out = x.shape[-1] if n_out is None else int(n_out)
     m = x.shape[-1] if inverse else n_out                # band samples
     n = n_out if inverse else x.shape[-1]                # grid samples
-    c = float(n // 2) if center is True else float(center or 0.0)
-    step = _step(k_start, k_end, m, include_end)
-    ramp = None if c == 0 else _phasor(c * zoom_freq(m, k_start, k_end, include_end), x)
+    c = float(n // 2) if center is True else float(center)
+    step, freq = _band(m, k_start, k_end, include_end)    # step and zoom_freq(m, ...)
+    ramp = None if c == 0 else _phasor(c * freq, x)
     if inverse:
         # sum_m X[m] e^{+i w_m (n - c)} = e^{+i k_start n} sum_m [X[m] e^{-i c w_m}] e^{+i step m n}
         y = _czt_last(x if ramp is None else x * ramp.conj(), n, step, 0.0)
@@ -228,7 +230,7 @@ def _zoom(x, n_out, k_start, k_end, dim, norm, center, include_end, inverse):
         y = y.movedim(-1, d)
         n_band *= (x if inverse else y).shape[d]
         x = y
-    p = _NORM[norm][inverse]
+    p = _NORM[norm]["inverse" if inverse else "forward"]
     return x if p == 0 else x * n_band ** -p
 
 
