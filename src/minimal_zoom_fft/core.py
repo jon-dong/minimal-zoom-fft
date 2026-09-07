@@ -81,9 +81,12 @@ def _step(k_start, k_end, n, include_end):
 
 # --- readable twin ---------------------------------------------------------
 # czt_plain and czt compute the same transform.  czt_plain is Bluestein's
-# algorithm written out one step per line; czt is the same steps with the chirp
-# phases reduced modulo 2*pi in float64, the trivial factors skipped and the
-# convolution padded to a power of two.  The tests pin the two together.
+# algorithm written out one step per line, every phasor evaluated in float64
+# and cast to the working precision afterwards; czt is the same steps with the
+# phases reduced modulo 2*pi first, so that the cosine and the sine can be
+# taken in the working precision on the device, with the trivial factors
+# skipped and the convolution padded to a power of two.  Both stay at the
+# round-off of the working precision; the tests pin the two together.
 
 def czt_plain(x, n_out=None, w_phase=None, a_phase=0.0, dim=-1):
     """``czt``, written out.
@@ -95,9 +98,13 @@ def czt_plain(x, n_out=None, w_phase=None, a_phase=0.0, dim=-1):
 
     so the transform is three steps: multiply the input by a chirp, convolve
     with the conjugate chirp (by FFT, zero-padded so nothing wraps around),
-    multiply the result by the chirp again.  The phases are not reduced
-    modulo 2*pi here, so in float32 this version loses digits once ``w n²``
-    reaches thousands of radians; that reduction is what ``czt`` adds.
+    multiply the result by the chirp again.  Every phasor is evaluated in
+    float64 and cast to the working precision afterwards, which is accurate
+    for any phase but builds a float64 array on the CPU.  ``czt`` reduces the
+    phase modulo 2*pi instead and takes the cosine and the sine in the working
+    precision, on the device; that reduction is what keeps the cheaper route
+    accurate, and the two agree to float32 round-off on transforms whose
+    phases reach thousands of radians.
     """
     x = _complex(x)
     for d, p in _axes(x, dim, n_out=n_out, w=w_phase, a=a_phase):
