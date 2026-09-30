@@ -25,6 +25,7 @@ when the phases reach thousands of radians.
 from __future__ import annotations
 
 import math
+import operator
 
 import torch
 from torch.fft import fft, ifft
@@ -42,10 +43,26 @@ _NORM = {"backward": {"forward": 0.0, "inverse": 1.0},
 # --- helpers ---------------------------------------------------------------
 
 def _complex(x):
-    """Promote real input to complex; only float32/64 and complex64/128 are accepted."""
+    """Promote real input to complex; only float32/64 and complex64/128 tensors are accepted."""
+    if not torch.is_tensor(x):
+        raise TypeError(f"x must be a torch.Tensor, got {type(x).__name__}")
     if x.dtype not in (torch.float32, torch.float64, torch.complex64, torch.complex128):
         raise TypeError(f"unsupported dtype {x.dtype}; expected float32/64 or complex64/128")
     return x.to(torch.promote_types(x.dtype, torch.complex64))
+
+
+def _count(value, name="n_out"):
+    """``value`` as a number of samples: an integer of at least 1.
+
+    A NumPy integer counts as an integer; a float does not, even a whole one.
+    """
+    try:
+        count = operator.index(value)
+    except TypeError:
+        raise TypeError(f"{name}={value!r} is not an integer") from None
+    if count < 1:
+        raise ValueError(f"{name}={value!r} must be at least 1")
+    return count
 
 
 def _phasor(phase, like):
@@ -66,7 +83,13 @@ def _axes(x, dim, **params):
     A scalar parameter applies to every axis; a sequence gives one value per
     axis, in the order of ``dim``.
     """
-    dims = (dim,) if isinstance(dim, int) else tuple(dim)
+    try:
+        dims = (operator.index(dim),)                       # one axis
+    except TypeError:
+        try:
+            dims = tuple(operator.index(d) for d in dim)    # several
+        except TypeError:
+            raise TypeError(f"dim={dim!r} is not an integer or a sequence of integers") from None
     if any(not -x.ndim <= d < x.ndim for d in dims):
         raise ValueError(f"dim={dim!r} is out of range for a {x.ndim}-D input")
     dims = tuple(d % x.ndim for d in dims)
@@ -83,6 +106,8 @@ def _axes(x, dim, **params):
 
 def _band(n, k_start, k_end, include_end):
     """The spacing and the ``n`` band samples over ``[k_start, k_end]``."""
+    if not isinstance(include_end, bool):                 # a tuple would count as True
+        raise TypeError(f"include_end={include_end!r} is not a bool")
     step = (k_end - k_start) / (max(n - 1, 1) if include_end else n)
     return step, k_start + step * torch.arange(n, dtype=torch.float64, device="cpu")
 
@@ -123,7 +148,7 @@ def czt_plain(x, n_out=None, w_phase=None, a_phase=0.0, dim=-1):
 def _czt_plain_last(x, n_out, w_phase, a_phase):
     """Bluestein's algorithm along the last axis, step by step."""
     n = x.shape[-1]
-    m = n if n_out is None else int(n_out)
+    m = n if n_out is None else _count(n_out)
     w = -TWO_PI / m if w_phase is None else float(w_phase)
     a = float(a_phase)
 
@@ -153,7 +178,7 @@ def _czt_plain_last(x, n_out, w_phase, a_phase):
 def _czt_last(x, n_out, w_phase, a_phase):
     """Bluestein's chirp Z-transform along the last axis of a complex ``x``."""
     n = x.shape[-1]
-    m = n if n_out is None else int(n_out)
+    m = n if n_out is None else _count(n_out)
     w = -TWO_PI / m if w_phase is None else float(w_phase)
     a = float(a_phase)
     # Power of two >= n + m - 1.  That is shorter than the full linear length
@@ -208,12 +233,12 @@ def zoom_freq(n, k_start=0.0, k_end=TWO_PI, include_end=False):
     excluded); ``include_end=True`` puts the last sample on ``k_end``
     (``step = span / (n - 1)``).  The analogue of ``torch.fft.fftfreq``.
     """
-    return _band(n, k_start, k_end, include_end)[1]
+    return _band(_count(n, "n"), k_start, k_end, include_end)[1]
 
 
 def _zoom_last(x, n_out, k_start, k_end, center, include_end, inverse):
     """One axis of ``zoom_fft`` (or of ``zoom_ifft`` if ``inverse``), unnormalised."""
-    n_out = x.shape[-1] if n_out is None else int(n_out)
+    n_out = x.shape[-1] if n_out is None else _count(n_out)
     m = x.shape[-1] if inverse else n_out                # band samples
     n = n_out if inverse else x.shape[-1]                # grid samples
     c = float(n // 2) if center is True else float(center)

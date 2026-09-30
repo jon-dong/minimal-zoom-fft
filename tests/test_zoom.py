@@ -315,6 +315,44 @@ class TestDtypesAndErrors:
         with pytest.raises(ValueError, match="out of range"):
             zoom_ifft(x, dim=-2)
 
+    @pytest.mark.parametrize("transform", [zoom_fft, zoom_ifft])
+    def test_non_tensor_input_names_its_type(self, transform):
+        with pytest.raises(TypeError, match="x must be a torch.Tensor, got list"):
+            transform([1.0, 2.0, 3.0])
+
+    @pytest.mark.parametrize("transform", [zoom_fft, zoom_ifft])
+    @pytest.mark.parametrize("n_out", [0, -3])
+    def test_n_out_below_one_raises(self, n_out, transform):
+        x = torch.randn(8, dtype=C128)
+        with pytest.raises(ValueError, match="n_out.*at least 1"):
+            transform(x, n_out)
+        with pytest.raises(ValueError, match="n_out.*at least 1"):
+            transform(x, n_out, include_end=True, norm="backward")
+
+    @pytest.mark.parametrize("transform", [zoom_fft, zoom_ifft])
+    @pytest.mark.parametrize("n_out", [5.7, "5"])
+    def test_non_integer_n_out_raises(self, n_out, transform):
+        with pytest.raises(TypeError, match="n_out.*not an integer"):
+            transform(torch.randn(8, dtype=C128), n_out)
+
+    @pytest.mark.parametrize("include_end", [(False, False), 1, 0, None, "no"])
+    def test_include_end_must_be_a_bool(self, include_end):
+        """A tuple would count as True on every axis, so anything but a bool is refused."""
+        x = torch.randn(6, 5, dtype=C128)
+        for transform in (zoom_fft, zoom_ifft):
+            with pytest.raises(TypeError, match="include_end"):
+                transform(x, (4, 7), -0.5, 0.5, dim=(-2, -1), include_end=include_end)
+        with pytest.raises(TypeError, match="include_end"):
+            zoom_freq(5, -1.0, 1.0, include_end=include_end)
+
+    def test_zoom_freq_needs_a_positive_integer(self):
+        with pytest.raises(ValueError, match="n=0 must be at least 1"):
+            zoom_freq(0)
+        with pytest.raises(ValueError, match="n=0 must be at least 1"):
+            zoom_freq(0, include_end=True)
+        with pytest.raises(TypeError, match="n=4.0 is not an integer"):
+            zoom_freq(4.0)
+
 
 # ---------------------------------------------------------------------------
 # Default device

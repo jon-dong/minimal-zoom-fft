@@ -37,13 +37,15 @@ def test_plain_keeps_precision_and_promotes_real():
 
 
 @pytest.mark.parametrize("kwargs", [{"dim": 3}, {"n_out": (3, 3, 3), "dim": (0, 1)},
-                                    {"dim": (0, -2)}])
+                                    {"dim": (0, -2)}, {"dim": 1.5}, {"n_out": 0},
+                                    {"n_out": 2.5}, {"n_out": (3, -1), "dim": (0, 1)}])
 def test_plain_refuses_what_fast_refuses(kwargs):
     x = torch.randn(4, 4, dtype=C64)
-    with pytest.raises(ValueError) as fast:
+    with pytest.raises((TypeError, ValueError)) as fast:
         czt(x, **kwargs)
-    with pytest.raises(ValueError) as plain:
+    with pytest.raises((TypeError, ValueError)) as plain:
         czt_plain(x, **kwargs)
+    assert type(plain.value) is type(fast.value)
     assert str(plain.value) == str(fast.value)
 
 
@@ -51,3 +53,8 @@ def test_plain_refuses_an_unsupported_dtype():
     x = torch.arange(8)
     with pytest.raises(TypeError, match="dtype"):
         czt_plain(x)
+
+
+def test_plain_refuses_a_non_tensor():
+    with pytest.raises(TypeError, match="x must be a torch.Tensor, got list"):
+        czt_plain([1.0, 2.0, 3.0])

@@ -129,3 +129,39 @@ class TestArgumentErrors:
     def test_out_of_range_dim_raises(self, dim):
         with pytest.raises(ValueError, match="out of range"):
             czt(torch.randn(4, 4, dtype=C64), dim=dim)
+
+    def test_non_tensor_input_names_its_type(self):
+        with pytest.raises(TypeError, match="x must be a torch.Tensor, got list"):
+            czt([1.0, 2.0, 3.0])
+
+    @pytest.mark.parametrize("n_out", [0, -3, (3, 0)])
+    def test_n_out_below_one_raises(self, n_out):
+        dim = (0, 1) if isinstance(n_out, tuple) else -1
+        with pytest.raises(ValueError, match="n_out.*at least 1"):
+            czt(torch.randn(4, 4, dtype=C64), n_out, dim=dim)
+        with pytest.raises(ValueError, match="n_out.*at least 1"):
+            czt(torch.randn(4, 4, dtype=C64), n_out, w_phase=0.1, dim=dim)
+
+    @pytest.mark.parametrize("n_out", [5.7, 5.0, "5", (3, 2.5)])
+    def test_non_integer_n_out_raises(self, n_out):
+        dim = (0, 1) if isinstance(n_out, tuple) else -1
+        with pytest.raises(TypeError, match="n_out.*not an integer"):
+            czt(torch.randn(4, 4, dtype=C64), n_out, dim=dim)
+
+    @pytest.mark.parametrize("dim", [1.0, None, "a", (0, 1.5)])
+    def test_non_integer_dim_raises(self, dim):
+        with pytest.raises(TypeError, match="dim.*integer"):
+            czt(torch.randn(4, 4, dtype=C64), dim=dim)
+
+    def test_integer_tensors_count_as_integers(self):
+        x = torch.randn(4, 6, dtype=C128)
+        assert torch.equal(czt(x, torch.tensor(5), dim=torch.tensor(0)), czt(x, 5, dim=0))
+
+    def test_numpy_integers_count_as_integers_and_arrays_are_refused(self):
+        np = pytest.importorskip("numpy")
+        x = torch.randn(4, 6, dtype=C128)
+        assert torch.equal(czt(x, np.int64(5), dim=np.int64(0)), czt(x, 5, dim=0))
+        assert torch.equal(czt(x, (np.int32(5), 3), dim=(np.int64(0), -1)),
+                           czt(x, (5, 3), dim=(0, -1)))
+        with pytest.raises(TypeError, match="x must be a torch.Tensor, got ndarray"):
+            czt(np.ones(8))
