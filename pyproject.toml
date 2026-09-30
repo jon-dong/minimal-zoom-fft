@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,13 +7,13 @@ name = "minimal-zoom-fft"
 version = "0.1.0"
 description = "Zoomed FFT and chirp Z-transform in PyTorch: the spectrum on any band, at any sampling."
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [{ name = "Jonathan Dong", email = "jonathan.dong@epfl.ch" }]
 keywords = ["fft", "chirp-z-transform", "czt", "zoom-fft", "bluestein", "pytorch"]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering",
 ]
