@@ -8,7 +8,7 @@ import math
 import pytest
 import torch
 
-from minimal_zoom_fft import zoom_fft, zoom_ifft, zoom_freq
+from minimal_zoom_fft import czt, czt_plain, zoom_fft, zoom_ifft, zoom_freq
 
 torch.manual_seed(0)
 PI = math.pi
@@ -314,3 +314,30 @@ class TestDtypesAndErrors:
             zoom_fft(x, dim=1)
         with pytest.raises(ValueError, match="out of range"):
             zoom_ifft(x, dim=-2)
+
+
+# ---------------------------------------------------------------------------
+# Default device
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs MPS")
+def test_runs_under_an_mps_default_device():
+    """The float64 tables are built on the CPU, since MPS has no float64, so
+    ``torch.set_default_device("mps")`` leaves every function working."""
+    x = torch.randn(16, dtype=C64)
+    calls = [lambda t: zoom_fft(t, 24, -0.5, 0.5, center=True),
+             lambda t: zoom_ifft(t, 24, 0.3, 1.5, center=True),
+             lambda t: czt(t, 9, 0.3, -0.2),
+             lambda t: czt_plain(t, 9, 0.3, -0.2)]
+    refs = [call(x) for call in calls]
+    previous = torch.empty(0).device
+    try:
+        torch.set_default_device("mps")
+        outs = [call(x.to("mps")) for call in calls]
+        freq = zoom_freq(8)
+    finally:
+        torch.set_default_device(previous)
+    assert freq.device.type == "cpu" and freq.dtype == F64
+    for got, ref in zip(outs, refs):
+        assert got.device.type == "mps"
+        assert (got.cpu() - ref).abs().max() < 1e-4 * ref.abs().max()

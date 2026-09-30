@@ -53,6 +53,8 @@ def _phasor(phase, like):
 
     ``phase`` is float64 and is reduced modulo 2*pi *before* the cast, so
     ``exp(i w k^2 / 2)`` keeps full accuracy in float32 for large phases.
+    It is built on the CPU (``device="cpu"`` at every ``torch.arange``), since
+    a default device such as MPS has no float64.
     """
     phase = torch.remainder(phase, TWO_PI).to(device=like.device, dtype=like.real.dtype)
     return torch.complex(phase.cos(), phase.sin())
@@ -82,7 +84,7 @@ def _axes(x, dim, **params):
 def _band(n, k_start, k_end, include_end):
     """The spacing and the ``n`` band samples over ``[k_start, k_end]``."""
     step = (k_end - k_start) / (max(n - 1, 1) if include_end else n)
-    return step, k_start + step * torch.arange(n, dtype=torch.float64)
+    return step, k_start + step * torch.arange(n, dtype=torch.float64, device="cpu")
 
 
 # --- readable twin ---------------------------------------------------------
@@ -128,14 +130,14 @@ def _czt_plain_last(x, n_out, w_phase, a_phase):
     def phasor(phase):                                    # e^{i phase}, in the precision of x
         return torch.exp(1j * phase).to(device=x.device, dtype=x.dtype)
 
-    k = torch.arange(max(n, m), dtype=torch.float64)
+    k = torch.arange(max(n, m), dtype=torch.float64, device="cpu")
     chirp = phasor(w * k * k / 2)                         # e^{i w k²/2}
 
     # 1. multiply the input by the start phase and the chirp
     xn = x * phasor(-a * k[:n]) * chirp[:n]
 
     # 2. the convolution kernel e^{-i w j²/2} for every lag j = k - n, from -(n-1) to m-1
-    j = torch.arange(-(n - 1), m, dtype=torch.float64)
+    j = torch.arange(-(n - 1), m, dtype=torch.float64, device="cpu")
     kernel = phasor(-w * j * j / 2)
 
     # 3. linear convolution by FFT: pad to the full length so the circular one is linear
@@ -158,7 +160,7 @@ def _czt_last(x, n_out, w_phase, a_phase):
     # 2n + m - 2 that czt_plain pads to, so the end of the convolution wraps
     # around, but it wraps below index n - 1, outside the window kept below.
     n_fft = 1 << (n + m - 2).bit_length()
-    k = torch.arange(max(n, m), dtype=torch.float64)
+    k = torch.arange(max(n, m), dtype=torch.float64, device="cpu")
     chirp = _phasor(w * k * k / 2, x)                    # exp(i w k^2 / 2)
     # n k = (n^2 + k^2 - (k - n)^2) / 2 turns the sum over n into a linear
     # convolution of x[n] exp(-i a n) exp(i w n^2 / 2) with exp(-i w j^2 / 2),
@@ -200,7 +202,7 @@ def czt(x, n_out=None, w_phase=None, a_phase=0.0, dim=-1):
 
 def zoom_freq(n, k_start=0.0, k_end=TWO_PI, include_end=False):
     """The ``n`` frequencies (radians per sample) at which ``zoom_fft``
-    samples the band: ``k_start + step * m``, as a float64 tensor.
+    samples the band: ``k_start + step * m``, as a float64 tensor on the CPU.
 
     ``include_end=False`` samples like FFT bins (``step = span / n``, right end
     excluded); ``include_end=True`` puts the last sample on ``k_end``
@@ -220,7 +222,9 @@ def _zoom_last(x, n_out, k_start, k_end, center, include_end, inverse):
     if inverse:
         # sum_m X[m] e^{+i w_m (n - c)} = e^{+i k_start n} sum_m [X[m] e^{-i c w_m}] e^{+i step m n}
         y = _czt_last(x if ramp is None else x * ramp.conj(), n, step, 0.0)
-        return y if k_start == 0 else y * _phasor(k_start * torch.arange(n, dtype=torch.float64), x)
+        if k_start == 0:
+            return y
+        return y * _phasor(k_start * torch.arange(n, dtype=torch.float64, device="cpu"), x)
     # sum_n x[n] e^{-i w_m (n - c)} = e^{+i c w_m} sum_n x[n] e^{-i k_start n} e^{-i step n m}
     y = _czt_last(x, m, -step, k_start)
     return y if ramp is None else y * ramp
