@@ -83,11 +83,21 @@ class TestFullBandIsTorchFft:
         x = torch.randn(16, dtype=C128)
         assert torch.allclose(zoom_fft(x), torch.fft.fft(x, norm="ortho"), atol=TOL)
 
-    def test_shifted_full_band_is_fftshift(self):
-        """The band ``[-pi, pi)`` is the ``fftshift``-ed spectrum."""
-        x = torch.randn(8, dtype=C128)
-        got = zoom_fft(x, k_start=-PI, k_end=PI)
-        assert torch.allclose(got, torch.fft.fftshift(torch.fft.fft(x, norm="ortho")), atol=TOL)
+    @pytest.mark.parametrize("n", [8, 9])
+    def test_shifted_full_band_is_fftshift(self, n):
+        """The full band starting at ``-2 pi (N // 2) / N`` is the
+        ``fftshift``-ed spectrum.  That is ``[-pi, pi)`` for even ``N``; for odd
+        ``N`` the ``fftshift``-ed bins sit half a bin above ``[-pi, pi)``."""
+        x = torch.randn(n, dtype=C128)
+        ref = torch.fft.fftshift(torch.fft.fft(x, norm="ortho"))
+        bins = 2 * PI * torch.fft.fftshift(torch.fft.fftfreq(n, dtype=F64))
+        k0 = -2 * PI * (n // 2) / n
+        assert torch.allclose(zoom_fft(x, k_start=k0, k_end=k0 + 2 * PI), ref, atol=TOL)
+        assert torch.allclose(zoom_freq(n, k0, k0 + 2 * PI), bins, atol=TOL)
+        half_bin = PI / n if n % 2 else 0.0
+        assert torch.allclose(zoom_freq(n, -PI, PI) + half_bin, bins, atol=TOL)
+        if n % 2 == 0:
+            assert torch.allclose(zoom_fft(x, k_start=-PI, k_end=PI), ref, atol=TOL)
 
     def test_zoom_freq_default_is_fftfreq(self):
         freqs = torch.remainder(2 * PI * torch.fft.fftfreq(8, dtype=F64), 2 * PI)
@@ -201,16 +211,35 @@ class TestCenter:
         (8, 6, -0.9, 1.4),   # even input, asymmetric range
         (9, 9, 0.2, 2.5),    # one-sided range
     ])
-    def test_half_pixel_origin_matches_psf_generator(self, n_in, n_out, k0, k1):
-        """``center=(N-1)/2`` reproduces ``psf_generator``'s ``custom_ifft2``
-        with ``fftshift_input=True``: origin at the geometric centre of the
-        grid, between two samples for even ``N``."""
+    def test_float_origin_inverse(self, n_in, n_out, k0, k1):
+        """A fractional origin in ``zoom_ifft``, in complex64, against the
+        explicit sum."""
         X = torch.randn(n_in, n_in, dtype=C64)
         c = (n_in - 1) / 2
         ref = inv2(X, (n_out, n_out), k0, k1, include_end=True, c=(c, c))
         got = zoom_ifft(X, (n_out, n_out), k0, k1, dim=(-2, -1), norm="forward",
                         center=c, include_end=True)
         assert torch.allclose(got.to(C128), ref, atol=1e-4)
+
+    @pytest.mark.parametrize("include_end", [False, True])
+    @pytest.mark.parametrize("n_in,n_out,k0,k1", [
+        (9, 7, -1.3, 1.3),   # odd input, symmetric range
+        (8, 6, -0.9, 1.4),   # even input, asymmetric range
+        (9, 9, 0.2, 2.5),    # one-sided range
+    ])
+    def test_conjugate_kernel_is_the_negated_band(self, n_in, n_out, k0, k1, include_end):
+        """``X[m] = sum_n x[n] exp(+i w_m (n - c))`` on the band ``[k0, k1]``
+        with ``c = (N - 1) / 2``, the sum that ``psf_generator``'s
+        ``custom_ifft2`` takes from a centred pupil, is ``zoom_fft`` on the
+        band ``[-k0, -k1]`` with the norm mirrored."""
+        x = torch.randn(n_in, n_in, dtype=C128)
+        c = (n_in - 1) / 2
+        e = fwd_matrix(n_in, n_out, k0, k1, include_end, c).conj()      # exp(+i w_m (n - c))
+        ref = e @ x @ e.T
+        kw = dict(n_out=(n_out, n_out), k_start=-k0, k_end=-k1, dim=(-2, -1),
+                  center=c, include_end=include_end)
+        assert torch.allclose(zoom_fft(x, norm="backward", **kw), ref, atol=TOL)
+        assert torch.allclose(zoom_fft(x, norm="forward", **kw), ref / n_out ** 2, atol=TOL)
 
     def test_float_origin_forward(self):
         x = torch.randn(10, dtype=C128)

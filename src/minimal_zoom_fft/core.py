@@ -9,7 +9,7 @@ Along one axis, with ``N`` input and ``M`` output samples::
 ``w_m = zoom_freq(M, k_start, k_end, include_end)`` samples the band in
 radians per sample and ``c`` is the index of the origin (``center``).  With
 default arguments ``zoom_fft`` is ``torch.fft.fft(x, norm="ortho")``,
-``zoom_ifft`` its inverse and ``czt`` the unnormalised DFT.
+``zoom_ifft`` its inverse and ``czt`` the unnormalised DFT, to round-off.
 
 Every function transforms the last axis by default; ``dim`` selects one or
 several axes (the transform is separable) and the other axes are batch axes.
@@ -280,8 +280,8 @@ def zoom_fft(x, n_out=None, k_start=0.0, k_end=TWO_PI, dim=-1, norm="ortho",
         X[m] = sum_{n=0}^{N-1} x[n] exp(-i w_m (n - c)),   m = 0, ..., M-1
 
     with ``w_m = zoom_freq(M, k_start, k_end, include_end)`` and ``c`` the
-    origin index set by ``center``.  With default arguments this is exactly
-    ``torch.fft.fft(x, norm="ortho")``.
+    origin index set by ``center``.  With default arguments this is
+    ``torch.fft.fft(x, norm="ortho")`` to round-off.
 
     Parameters
     ----------
@@ -291,7 +291,8 @@ def zoom_fft(x, n_out=None, k_start=0.0, k_end=TWO_PI, dim=-1, norm="ortho",
         Band samples ``M`` per axis.  Default: the input length.
     k_start, k_end : float or sequence of float
         Band limits in radians per sample.  Default: the full circle
-        ``[0, 2*pi)``; ``[-pi, pi)`` gives the ``fftshift``-ed spectrum.
+        ``[0, 2*pi)``.  The ``fftshift``-ed spectrum is the full band starting
+        at ``-2*pi * (N // 2) / N``, which is ``[-pi, pi)`` for even ``N`` only.
     dim : int or sequence of int
         Axes to transform.  Default: the last axis.
     norm : {"ortho", "forward", "backward"}
@@ -301,10 +302,10 @@ def zoom_fft(x, n_out=None, k_start=0.0, k_end=TWO_PI, dim=-1, norm="ortho",
     center : bool, float or sequence
         Origin of the input grid.  ``False``: sample 0 (``torch.fft``).
         ``True``: index ``N // 2`` (``fftshift``; on the full band this is
-        ``fft(ifftshift(x))``).  A float pins the origin at that index, which
-        may be fractional: ``(N - 1) / 2`` is the centre of the grid.
+        ``fft(ifftshift(x), norm=norm)``).  A float pins the origin at that
+        index, which may be fractional: ``(N - 1) / 2`` is the centre of the grid.
     include_end : bool
-        Sample ``k_end`` exactly (``M - 1`` steps) instead of excluding it.
+        Put the last sample on ``k_end`` (``M - 1`` steps) instead of excluding it.
     """
     return _zoom(x, n_out, k_start, k_end, dim, norm, center, include_end, inverse=False)
 
@@ -322,8 +323,9 @@ def zoom_ifft(x, n_out=None, k_start=0.0, k_end=TWO_PI, dim=-1, norm="ortho",
     ``k_start``, ``k_end``, ``center`` and ``include_end`` under mirrored
     ``norm`` (``"backward"`` <-> ``"forward"``, ``"ortho"`` <-> ``"ortho"``),
     as for ``torch.fft.fft`` / ``ifft``.  On a full band (``k_end = k_start
-    + 2*pi``, ``include_end=False``, ``n_out = M``) it is also the exact
-    inverse, and with default arguments it is ``torch.fft.ifft(x, norm="ortho")``.
+    + 2*pi``, ``include_end=False``, ``n_out = M``) and with the same ``norm``
+    it is also the inverse, and with default arguments it is
+    ``torch.fft.ifft(x, norm="ortho")``, both to round-off.
 
     Parameters
     ----------
@@ -339,6 +341,7 @@ def zoom_ifft(x, n_out=None, k_start=0.0, k_end=TWO_PI, dim=-1, norm="ortho",
         unnormalised, ``"ortho"`` divides by the square root.
     center : bool, float or sequence
         Origin of the *output* grid, with the meaning it has in ``zoom_fft``
-        (``True`` is ``N // 2``; on the full band this is ``fftshift(ifft(X))``).
+        (``True`` is ``N // 2``; on the full band this is
+        ``fftshift(ifft(X, norm=norm))``).
     """
     return _zoom(x, n_out, k_start, k_end, dim, norm, center, include_end, inverse=True)
