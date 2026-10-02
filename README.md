@@ -9,9 +9,9 @@ Typical uses: pupil-to-PSF computation in microscopy, Fourier ptychography, diff
 ## Install
 
 ```bash
-pip install minimal-zoom-fft                                     # once published
-pip install git+https://github.com/jon-dong/minimal-zoom-fft     # from GitHub
-pip install -e ".[test]" && pytest                          # from a checkout
+pip install minimal-zoom-fft
+pip install git+https://github.com/jon-dong/minimal-zoom-fft     # the development version
+pip install -e ".[test]" && pytest                               # from a checkout
 ```
 
 Requires Python ≥ 3.10 and PyTorch ≥ 2.0.
