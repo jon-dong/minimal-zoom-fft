@@ -68,8 +68,8 @@ Along one axis with `N` input and `M` output samples:
 
 Three notebooks in [`notebooks/`](notebooks/), after `pip install -e ".[notebooks]"`:
 
-1. [Why](notebooks/01_why_zoom_fft.ipynb): the Airy disk a plain FFT undersamples, and what zero-padding costs.
-2. [What it computes](notebooks/02_what_it_computes.ipynb): every convention above, checked against brute force.
+1. [Tutorial](notebooks/01_tutorial.ipynb): the Airy disk a plain FFT undersamples, and what zero-padding costs.
+2. [Details](notebooks/02_details.ipynb): every convention above, checked against brute force.
 3. [Benchmark](notebooks/03_benchmark.ipynb): speed against padded FFTs and SciPy, precision, memory.
 
 ## Tests
@@ -80,6 +80,12 @@ pytest
 ```
 
 Every convention above is pinned against explicit float64 sums and against `torch.fft`.
+
+## Authors
+
+- [Jonathan Dong](https://github.com/jon-dong) (EPFL)
+
+## Reviewers
 
 ## License
 
