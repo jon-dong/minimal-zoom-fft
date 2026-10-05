@@ -1,5 +1,7 @@
 # minimal-zoom-fft
 
+![A circular pupil produces a tiny PSF in a full FFT field and a densely sampled PSF with zoom_fft, shown on a shared logarithmic intensity scale. The chirp Z-transform uses three FFTs per axis, with 1D cost O((N + M) log(N + M)) for N input and M output samples. Diagrams compare full-circle FFT sampling with a selected CZT arc around z = 1.](docs/assets/overview.png)
+
 The Fourier transform of a signal on any frequency band, at any sampling, in PyTorch: a zoomed FFT, computed by the chirp Z-transform.
 
 `torch.fft.fft` gives the spectrum at `N` equispaced frequencies over the whole circle. Often you want a narrow band, sampled more finely, with `M ≠ N` points: the PSF of a pupil, Fourier ptychography, diffraction onto a rescaled grid. Bluestein's algorithm does that with three FFTs, in `O((N+M) log(N+M))`, on any device, with autograd.
