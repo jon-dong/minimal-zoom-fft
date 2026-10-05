@@ -1,5 +1,3 @@
-# minimal-zoom-fft
-
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/overview-dark.png">
   <img alt="A circular pupil produces a tiny PSF in a full FFT field and a densely sampled PSF with zoom_fft, shown on a shared logarithmic intensity scale. The chirp Z-transform uses three FFTs per axis, with 1D cost O((N + M) log(N + M)) for N input and M output samples. Diagrams compare full-circle FFT sampling with a selected CZT arc around z = 1." src="docs/assets/overview.png">
